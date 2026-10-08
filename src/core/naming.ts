@@ -15,8 +15,13 @@ export function assignLabels(L: Layout) {
   };
   // punti d'ingresso/uscita
   let pn = 1;
-  for (const t of L.entryPoints().sort((a, b) => a.x - b.x || a.y - b.y))
+  const byName = new Map<string, string>();
+  for (const t of L.entryPoints().sort((a, b) => a.x - b.x || a.y - b.y)) {
+    const prev = byName.get(t.name ?? '');
+    if (prev) { t.label = prev; continue; }
     t.label = take(shortOk(t.name, 8) && !/^\d+$/.test(t.name!) ? t.name : undefined, () => 'P' + pn++);
+    byName.set(t.name ?? '', t.label);
+  }
   // segnali: nome breve se presente, altrimenti numero progressivo (ordinati da sinistra a destra)
   const sigs = [...L.signals].filter((s) => !s.hidden).sort((a, b) => a.x - b.x || a.y - b.y);
   const named = sigs.filter((s) => shortOk(s.name, 5) && /^\d+[a-z]?$/i.test(s.name!));

@@ -68,7 +68,8 @@ describe('livello 1', () => {
     ok('1 3 E');
     run(sim, '07:59');
     const r91 = sim.trainNamed('R 2291')!;
-    expect(r91.status).toBe('stopped');
+    expect(r91.onLayout).toBe(true);
+    expect(r91.stockFrom?.name).toBe('R 2290');
     ok('6 O');
     run(sim, '08:15');
     for (const t of sim.trains) expect([t.name, t.status]).toEqual([t.name, t.name === 'R 2290' ? 'exited' : 'exited']);

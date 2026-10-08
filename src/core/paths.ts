@@ -134,7 +134,7 @@ export type Target = { signal: Signal } | { exit: Element } | { station: string 
  * destinazione, eventualmente attraversando altri segnali intermedi.
  * Preferisce gli scambi nella posizione attuale.
  */
-export function findRoute(L: Layout, from: Signal, target: Target, canThrow: (sw: Element) => boolean, maxSignals = 6): RoutePlan | null {
+export function findRoute(L: Layout, from: Signal, target: Target, canThrow: (sw: Element) => boolean, maxSignals = 6, isFree?: (bp: BlockPath, sig: Signal) => boolean): RoutePlan | null {
   if (!from.controls) return null;
   const ov = new Map<Element, boolean>();
   const segments: RouteSegment[] = [];
@@ -142,7 +142,7 @@ export function findRoute(L: Layout, from: Signal, target: Target, canThrow: (sw
 
   const matches = (bp: BlockPath): boolean => {
     if ('signal' in target) return bp.endSignal === target.signal;
-    if ('exit' in target) return bp.exit === target.exit;
+    if ('exit' in target) return !!bp.exit && (bp.exit === target.exit || bp.exit.name === target.exit.name);
     return false;
   };
 
@@ -154,6 +154,7 @@ export function findRoute(L: Layout, from: Signal, target: Target, canThrow: (sw
     if (visited.has(vkey)) return false;
     visited.add(vkey);
     const res = walkChoices(sig.controls, signalDirCompass(sig), (bp) => {
+      if (isFree && !isFree(bp, sig)) return false;
       segments.push({ signal: sig, path: bp });
       if (matches(bp)) return true;
       if ('station' in target && bp.cells.some((c) => c.el.isStation && c.el.name && stationMatch(c.el.name, target.station))) return true;
@@ -194,8 +195,12 @@ export function findRoute(L: Layout, from: Signal, target: Target, canThrow: (sw
   return { segments, switches, target: 'signal' in target ? target.signal : 'exit' in target ? target.exit : from };
 }
 
+/** Il binario "a" soddisfa la destinazione "b" (con o senza indicazione del binario)? */
 function stationMatch(a: string, b: string) {
-  return a.toLowerCase() === b.toLowerCase() || a.toLowerCase().replace(/\s+/g, '') === b.toLowerCase().replace(/\s+/g, '');
+  const n = (x: string) => x.toLowerCase().replace(/\s+/g, '');
+  if (b.startsWith('@')) return a.includes('@') && n(a.slice(a.indexOf('@'))) === n(b);
+  if (b.includes('@')) return n(a) === n(b);
+  return n(a.split('@')[0]) === n(b);
 }
 
 /** Celle percorse finché il percorso è valido (per scoprire gli scambi anche quando la sezione fallisce). */

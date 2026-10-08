@@ -16,6 +16,7 @@ export type Token =
   | { kind: 'switch'; e: Element; raw: string }
   | { kind: 'exit'; e: Element; raw: string }
   | { kind: 'itin'; name: string; raw: string }
+  | { kind: 'platform'; plat: string; raw: string }
   | { kind: 'train'; t: Train; raw: string }
   | { kind: 'verb'; v: Verb; raw: string }
   | { kind: 'number'; n: number; raw: string }
@@ -75,6 +76,9 @@ export class CommandInterpreter {
       if (ex) return { kind: 'exit', e: ex, raw };
       const it = L.itineraries.find((x) => x.name.toLowerCase() === low);
       if (it) return { kind: 'itin', name: it.name, raw };
+      const pm = /^(?:b|bin|@)\.?(\w+)$/i.exec(raw);
+      if (pm && L.stationTracks().some((e) => e.name!.toLowerCase().endsWith('@' + pm[1].toLowerCase())))
+        return { kind: 'platform', plat: pm[1], raw };
     }
     const t = this.findTrain(raw);
     if (t) return { kind: 'train', t, raw };
@@ -127,6 +131,7 @@ export class CommandInterpreter {
         else if (t.kind === 'itin') msgs.push(`itinerario ${t.name}`);
         else if (t.kind === 'train') { pv.trains.push(t.t); msgs.push(`treno ${t.t.name}`); }
         else if (t.kind === 'exit') msgs.push(`uscita ${t.e.label}`);
+        else if (t.kind === 'platform') msgs.push(`binario ${t.plat}: usalo come destinazione (es. "12 ${t.raw}")`);
       }
     }
     pv.message = msgs.join(' · ');
@@ -148,15 +153,20 @@ export class CommandInterpreter {
       let plan: RoutePlan | null = null;
       if (t.kind === 'signal') plan = this.sim.planRoute(from, { signal: t.s });
       else if (t.kind === 'exit') plan = this.sim.planRoute(from, { exit: t.e });
-      else return { error: `"${t.raw}" non è un segnale né un'uscita` };
+      else if (t.kind === 'platform') plan = this.sim.planRoute(from, { station: '@' + t.plat });
+      else return { error: `"${t.raw}" non è un segnale, un binario né un'uscita` };
       if (!plan) return { error: `Nessun itinerario possibile da ${from.label} a ${t.raw}` };
       plans.push(plan);
-      names.push(t.raw);
+      names.push(t.kind === 'platform' ? 'binario ' + t.plat : t.raw);
       if (t.kind === 'exit') break;
-      from = t.s;
+      if (t.kind === 'platform') {
+        const end = plan.segments[plan.segments.length - 1].path.endSignal;
+        if (!end) { if (i < toks.length - 1) return { error: `Il binario ${t.plat} è tronco: l'itinerario termina lì` }; break; }
+        from = end;
+      } else from = t.s;
     }
     const nsw = plans.reduce((n, p) => n + [...p.switches].filter(([sw, pos]) => sw.switched !== pos).length, 0);
-    return { plans, desc: `itinerario ${names.join(' → ')}${nsw ? ` · ${nsw} deviatoi da manovrare` : ''}` };
+    return { plans, desc: `itinerario ${names.join(' → ')}${nsw ? ` · ${nsw} ${nsw === 1 ? 'deviatoio' : 'deviatoi'} da manovrare` : ''}` };
   }
 
   /** Esegue una riga di comando. Restituisce i messaggi di esito. */
@@ -192,6 +202,7 @@ export class CommandInterpreter {
       else if (t.kind === 'train') { this.host.showTrain(t.t); res.push({ ok: true, msg: sim.describeTrain(t.t) }); }
       else if (t.kind === 'exit') res.push({ ok: false, msg: `${t.raw} è un'uscita: usala come destinazione (es. "12 ${t.raw}")` });
       else if (t.kind === 'number') res.push({ ok: false, msg: `Nessun segnale ${t.raw}` });
+      else if (t.kind === 'platform') res.push({ ok: false, msg: `${t.raw} è un binario: usalo come destinazione (es. "12 ${t.raw}")` });
     }
     return res;
   }
@@ -272,6 +283,7 @@ export class CommandInterpreter {
         // destinazioni raggiungibili dal segnale precedente
         for (const s of sim.layout.signals) if (s !== prev.s && !s.approach && s.label) add(s.label, 'segnale');
         for (const e of sim.layout.entryPoints()) add(e.label!, 'uscita');
+        for (const p of platformsOf(sim)) add('b' + p, 'binario');
         return out;
       }
     }
@@ -282,6 +294,12 @@ export class CommandInterpreter {
     for (const [w] of Object.entries(VERBS)) if (w.length > 2) add(w, 'comando');
     return out;
   }
+}
+
+function platformsOf(sim: Simulation): string[] {
+  const s = new Set<string>();
+  for (const e of sim.layout.stationTracks()) { const i = e.name!.indexOf('@'); if (i >= 0) s.add(e.name!.slice(i + 1)); }
+  return [...s];
 }
 
 function verbDesc(v: Verb, args: Token[]) {

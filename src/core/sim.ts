@@ -45,6 +45,10 @@ export class Train {
   missedStops = 0;
   turned = false;
   holding = false;
+  /** distanza totale percorsa dalla testa (m) */
+  odo = 0;
+  /** punto di arresto in stazione già individuato (in coordinate odometro) */
+  pendingStop?: { odo: number; el: Element; idx: number };
   arrivedAtStation?: Element;
   arrivedTime?: number;
   /** treno che ha ricevuto il materiale */
@@ -67,7 +71,7 @@ export class Train {
     let d = 0;
     if (this.status === 'ready' || this.status === 'delayed') d = Math.max(0, now - this.def.timeIn);
     for (const [i, r] of this.served) {
-      const st = this.def.stops[i];
+      const st = i < 0 ? { arrival: this.def.timeOut, departure: this.def.timeOut } : this.def.stops[i];
       if (r.departure !== undefined) d = r.departure - st.departure;
       else if (r.arrival !== undefined) d = r.arrival - st.arrival;
     }
@@ -297,8 +301,16 @@ export class Simulation {
 
   // ------------------------------------------------------------ itinerari
 
-  planRoute(from: Signal, target: Target): RoutePlan | null {
+  /** Cerca l'itinerario preferendo sezioni libere; se non ce ne sono, restituisce comunque il percorso (che verrà rifiutato con il motivo). */
+  planRoute(from: Signal, target: Target, onlyFree = false): RoutePlan | null {
+    const free = findRoute(this.layout, from, target, (sw) => this.cellFree(sw), 6, (bp, sig) => sig.clear || !this.pathBusy(bp.cells));
+    if (free || onlyFree) return free;
     return findRoute(this.layout, from, target, (sw) => this.cellFree(sw));
+  }
+
+  /** Esiste un itinerario, a prescindere da occupazioni e bloccaggi? */
+  reachable(from: Signal, target: Target): boolean {
+    return !!findRoute(this.layout, from, target, () => true);
   }
 
   /** Forma l'itinerario completo (scambi + segnali) in modo atomico. */
@@ -325,7 +337,7 @@ export class Simulation {
       opened.push(seg.signal.label ?? '');
     }
     const nSw = plan.switches.size;
-    return { ok: true, msg: `Itinerario formato: ${opened.join(' → ')}${nSw ? ` (${nSw} deviatoi)` : ''}` };
+    return { ok: true, msg: `Itinerario formato: ${opened.join(' → ')}${nSw ? ` (${nSw} ${nSw === 1 ? 'deviatoio' : 'deviatoi'})` : ''}` };
   }
 
   activateItinerary(name: string, depth = 0): Result {
@@ -370,6 +382,7 @@ export class Simulation {
     if (busy) { this.deny(); return { ok: false, msg: `Impossibile invertire ${t.name}: binario occupato` }; }
     // libera il vecchio percorso davanti al treno
     this.releaseAhead(t);
+    t.pendingStop = undefined;
     if (t.turned) this.perf.turned++;
     t.turned = true;
     // la testa diventa l'ultima carrozza: occ viene rovesciato e le direzioni invertite
@@ -422,13 +435,15 @@ export class Simulation {
     if (from.status !== 'arrived' || !from.occ.length) return { ok: false, msg: `Il treno ${from.name} non è arrivato in stazione` };
     if (!['ready', 'delayed'].includes(to.status)) return { ok: false, msg: `Il treno ${to.name} non può ricevere materiale` };
     if (from.def.stock && from.def.stock !== to.name) { this.perf.wrongAssign++; }
-    to.occ = from.occ; to.headPos = from.headPos;
-    from.occ = [];
+    to.occ = from.occ; to.headPos = from.headPos; to.odo = from.odo;
+    to.path = from.path; to.pathIdx = from.pathIdx; to.pathInfo = from.pathInfo;
+    from.occ = []; from.path = []; from.pathInfo = undefined;
     for (const c of to.occ) this.owner.set(c.el, to);
     from.status = 'exited'; from.exitedAt = this.time; from.assignedTo = to; to.stockFrom = from;
     to.status = 'stopped';
     to.enteredAt = this.time;
-    to.timeDep = Math.max(this.time + (to.def.waitTime || 60), stationDeparture(to));
+    // come nell'originale: parte all'orario previsto, ma non prima di "waitTime" secondi dall'arrivo del materiale
+    to.timeDep = Math.max(stationDeparture(to), (from.arrivedTime ?? this.time) + (to.def.waitTime || 60), this.time + 30);
     to.speed = 0;
     // sceglie il senso di marcia: inverte se il binario è tronco o se l'uscita è dall'altra parte
     const h = to.occ[0];
@@ -440,7 +455,7 @@ export class Simulation {
     if (!fwdOk && (backOk || !ahead || (ahead.deadEnd && !ahead.exit))) {
       this.reverseTrain(to);
       to.turned = false;
-    } else if (ahead) {
+    } else if (ahead && !to.path.length) {
       to.path = ahead.cells; to.pathIdx = 0; to.pathInfo = ahead;
       this.colorPath(ahead.cells.slice(1), 'route');
     }
@@ -471,7 +486,11 @@ export class Simulation {
     for (const t of this.trains) {
       switch (t.status) {
         case 'ready': this.tryEnter(t); break;
-        case 'delayed': this.tryEnter(t); if (t.status === 'delayed') { t.delayEnterSec++; } break;
+        case 'delayed':
+          // i treni in attesa d'ingresso riprovano ogni 3 secondi (risparmia calcoli negli scenari grandi)
+          if (this.time % 3 === t.idx % 3) this.tryEnter(t);
+          if (t.status === 'delayed') t.delayEnterSec++;
+          break;
         case 'stopped': this.checkDeparture(t); break;
         case 'starting': if (--t.startLeft <= 0) { t.status = 'running'; this.run(t); } break;
         case 'waiting': this.run(t); if (t.status === 'waiting') t.waitedSec++; break;
@@ -537,6 +556,7 @@ export class Simulation {
       if (start.dir === 8 || (start.kind === 'switch' && start.dir >= 12 && start.dir <= 15)) amb = txt.y < start.y ? CD.S : CD.N;
       const p = blockPath(L, start, amb);
       if (!p) { err ||= 'percorso d’ingresso non valido (scambi)'; continue; }
+      if (p.exit === txt || (p.exit && p.cells.length <= 1)) continue; // è un'uscita, non un ingresso
       if (this.pathBusy(p.cells)) { err = 'sezione d’ingresso occupata'; continue; }
       this.placeEntering(t, p);
       return 'ok';
@@ -634,24 +654,30 @@ export class Simulation {
     const L2 = t.length;
     let acc = -t.headPos;
     let maxV = this.allowedSpeed(t);
+    const pathEnd = this.distTo(t, t.path.length);
+    if (t.pendingStop && this.stopIndexFor(t, t.pendingStop.el) !== t.pendingStop.idx) t.pendingStop = undefined;
     for (let i = t.pathIdx; i < t.path.length; i++) {
       const el = t.path[i].el;
       const startD = acc;
       acc += el.length;
-      {
+      if (!t.pendingStop) {
         const si = this.stopIndexFor(t, el);
         if (si !== undefined && !(t.status === 'running' && el === t.outOf)) {
-          let target = startD + Math.min(el.length, el.length / 2 + L2 / 2);
-          if (L2 / 2 > el.length / 2) target = startD + el.length / 2 + L2 / 2;
-          const pathEnd = this.distTo(t, t.path.length);
-          target = Math.min(target, pathEnd);
-          if (target >= -0.5 && target < stopDist) { stopDist = Math.max(0, target); stopKind = 'station'; stopEl = el; stopIdx = si; }
+          // il treno si ferma con il centro sul binario di stazione (come nell'originale)
+          const target = Math.min(startD + el.length / 2 + L2 / 2, Math.max(startD + el.length / 2, pathEnd));
+          if (target >= -0.5) t.pendingStop = { odo: t.odo + Math.max(0, target), el, idx: si };
         }
       }
       if (i > t.pathIdx) {
         const sp = this.trackSpeed(el, t);
         if (sp && sp < maxV) maxV = Math.min(maxV, brakingSpeed(Math.max(0, startD), sp));
       }
+    }
+    const info0 = t.pathInfo;
+    const endClear0 = info0?.exit ? true : !!info0?.endSignal?.clear;
+    if (t.pendingStop) {
+      stopDist = Math.max(0, endClear0 ? t.pendingStop.odo - t.odo : Math.min(t.pendingStop.odo - t.odo, pathEnd));
+      stopKind = 'station'; stopEl = t.pendingStop.el; stopIdx = t.pendingStop.idx;
     }
     const endD = acc;
     const info = t.pathInfo;
@@ -668,7 +694,7 @@ export class Simulation {
     if (stopKind && d >= stopDist) {
       this.advance(t, stopDist);
       t.speed = 0;
-      if (stopKind === 'station') this.arriveAt(t, stopEl!, stopIdx!);
+      if (stopKind === 'station') { t.pendingStop = undefined; this.arriveAt(t, stopEl!, stopIdx!); }
       else this.stopAtEnd(t);
       return;
     }
@@ -694,8 +720,8 @@ export class Simulation {
       if (t.outside) { t.outDist += d; d = 0; break; }
       const head = t.path[t.pathIdx];
       const remain = head.el.length - t.headPos;
-      if (d < remain) { t.headPos += d; d = 0; break; }
-      d -= remain; t.headPos = head.el.length;
+      if (d < remain) { t.headPos += d; t.odo += d; d = 0; break; }
+      d -= remain; t.odo += remain; t.headPos = head.el.length;
       if (!this.nextCell(t)) { d = 0; break; }
     }
     this.markOcc(t);

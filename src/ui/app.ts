@@ -8,6 +8,7 @@ import { Renderer, THEMES, shortTrainName } from './renderer';
 import { decodeXpm } from './xpm';
 import { LEVELS, LevelDef } from '../scenarios';
 import { readScenarioFiles } from './loader';
+import { suggestions } from '../core/assist';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
@@ -15,7 +16,7 @@ const DAYS = ['', 'Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', '
 const SPEEDS = [1, 2, 5, 10, 20, 30, 60, 120];
 const TYPE_COLORS = ['#ff9f0a', '#64d2ff', '#30d158', '#bf5af2', '#ffd60a', '#ff375f', '#5e5ce6', '#ac8e68', '#66d4cf', '#e5e5ea'];
 
-interface LoadSpec { name: string; trk: string; sch: string; tds?: Map<string, string>; xpm?: Map<string, string>; texts?: Map<string, string>; tutorial?: string[]; day?: number; delays?: boolean; autoAssign?: boolean; id?: string }
+interface LoadSpec { seed?: number; autoFleet?: boolean; name: string; trk: string; sch: string; tds?: Map<string, string>; xpm?: Map<string, string>; texts?: Map<string, string>; tutorial?: string[]; day?: number; delays?: boolean; autoAssign?: boolean; id?: string }
 
 export class App implements CommandHost {
   sim!: Simulation;
@@ -33,6 +34,10 @@ export class App implements CommandHost {
   private audio?: AudioContext;
   private lastTT = 0;
   private sugg: { text: string; hint: string }[] = [];
+  private spec?: LoadSpec;
+  private log: { t: number; c: string }[] = [];
+  private replaying = false;
+  private lastSave = 0;
   private suggIdx = 0;
 
   constructor() {
@@ -46,7 +51,10 @@ export class App implements CommandHost {
     const L = parseTrk(spec.trk, { tds: spec.tds });
     assignLabels(L);
     const S = parseSch(spec.sch, (n) => spec.texts?.get(n.trim().toLowerCase()) ?? spec.texts?.get(n.trim().toLowerCase() + '.sch'));
-    this.sim = new Simulation(L, S, { day: spec.day, randomDelays: spec.delays ?? true, autoAssign: spec.autoAssign ?? true, seed: (Math.random() * 1e9) | 0 });
+    spec.seed ??= (Math.random() * 1e9) | 0;
+    this.spec = spec;
+    this.log = [];
+    this.sim = new Simulation(L, S, { day: spec.day, randomDelays: spec.delays ?? true, autoAssign: spec.autoAssign ?? true, seed: spec.seed });
     this.sim.listeners.push((a) => { this.pushAlert(a.time, a.text, a.level, a.train); if (a.level === 'bad') this.beep(220, 0.25); else if (a.level === 'warn') this.beep(520, 0.12); });
     this.sim.onTrainEnter = () => this.beep(880, 0.08);
     const canvas = $<HTMLCanvasElement>('board');
@@ -56,6 +64,7 @@ export class App implements CommandHost {
     this.renderer.images.clear();
     for (const [k, v] of spec.xpm ?? []) { const img = decodeXpm(v); if (img) this.renderer.images.set(k, img); }
     this.cmd = new CommandInterpreter(this);
+    if (spec.autoFleet) for (const s of L.signals) if (s.fleeted) this.sim.toggleFleet(s);
     this.renderer.resize();
     this.renderer.fit();
     $('scenarioName').textContent = spec.name;
@@ -74,18 +83,20 @@ export class App implements CommandHost {
   }
 
   loadLevel(l: LevelDef) {
-    this.load({ id: l.id, name: l.title, trk: l.trk, sch: l.sch, tutorial: l.tutorial, delays: false });
+    this.load({ id: l.id, name: l.title, trk: l.trk, sch: l.sch, tutorial: l.tutorial, delays: false, autoFleet: l.autoFleet });
   }
 
   // ------------------------------------------------------------ CommandHost
 
   setRunning(on: boolean) {
+    if (this.replaying) return;
     this.running = on;
     const b = $('btnPlay');
     b.textContent = on ? '❚❚ Pausa' : '▶ Avvia';
     b.classList.toggle('primary', !on);
   }
   setSpeed(n: number) {
+    if (this.replaying) return;
     this.speed = Math.max(1, Math.min(240, n));
     document.querySelectorAll('#speeds button').forEach((b) => b.classList.toggle('active', Number((b as HTMLElement).dataset.v) === this.speed));
   }
@@ -96,8 +107,61 @@ export class App implements CommandHost {
     const n = Math.max(0, dt - 180);
     for (let i = 0; i < n; i++) this.sim.step();
   }
-  showHelp() { $('helpModal').hidden = false; }
-  showTrain(t: Train) { this.selectTrain(t, true); }
+  showHelp() { if (!this.replaying) $('helpModal').hidden = false; }
+  showTrain(t: Train) { if (!this.replaying) this.selectTrain(t, true); }
+
+  /** Esegue un comando registrandolo per il salvataggio. */
+  exec(line: string) {
+    this.log.push({ t: this.sim.time, c: line });
+    return this.cmd.execute(line);
+  }
+
+  // ------------------------------------------------------------ salvataggio (replay dei comandi)
+
+  private save() {
+    if (!this.sim || !this.spec || this.replaying) return;
+    const sp = this.spec;
+    const data = {
+      v: 1, id: sp.id, name: sp.name, seed: sp.seed, day: this.sim.day, delays: sp.delays, autoAssign: sp.autoAssign, autoFleet: sp.autoFleet,
+      time: this.sim.time, log: this.log, speed: this.speed,
+      files: sp.id ? undefined : { trk: sp.trk, sch: sp.sch, tds: [...(sp.tds ?? [])], xpm: [...(sp.xpm ?? [])], texts: [...(sp.texts ?? [])].filter(([k]) => k.endsWith('.sch')) },
+    };
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); }
+    catch {
+      // spazio insufficiente: salva senza le icone
+      try { if (data.files) data.files.xpm = []; localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch { /* niente salvataggio */ }
+    }
+  }
+
+  savedGame(): { name: string; time: number } | undefined {
+    try { const d = JSON.parse(localStorage.getItem(SAVE_KEY) ?? 'null'); return d ? { name: d.name, time: d.time } : undefined; } catch { return undefined; }
+  }
+
+  resume() {
+    let d;
+    try { d = JSON.parse(localStorage.getItem(SAVE_KEY) ?? 'null'); } catch { d = null; }
+    if (!d) return;
+    const lv = LEVELS.find((l) => l.id === d.id);
+    const spec: LoadSpec = lv
+      ? { id: lv.id, name: lv.title, trk: lv.trk, sch: lv.sch, tutorial: undefined, delays: d.delays, autoFleet: lv.autoFleet, seed: d.seed, day: d.day }
+      : { name: d.name, trk: d.files.trk, sch: d.files.sch, tds: new Map(d.files.tds), xpm: new Map(d.files.xpm), texts: new Map(d.files.texts), day: d.day, delays: d.delays, autoAssign: d.autoAssign, seed: d.seed };
+    this.load(spec);
+    const log: { t: number; c: string }[] = d.log ?? [];
+    this.replaying = true;
+    let i = 0;
+    try {
+      while (this.sim.time <= d.time) {
+        while (i < log.length && log[i].t <= this.sim.time) { this.cmd.execute(log[i].c); i++; }
+        if (this.sim.time === d.time) break;
+        this.sim.step();
+      }
+    } finally { this.replaying = false; }
+    this.log = log.slice(0, i);
+    this.setSpeed(d.speed ?? 10);
+    $('alerts').innerHTML = '';
+    for (const a of this.sim.alerts.slice(-80)) this.pushAlert(a.time, a.text, a.level, a.train);
+    this.feedback(`Partita ripresa alle ${formatTime(this.sim.time)}. Premi Invio per continuare.`, 'pv');
+  }
 
   // ------------------------------------------------------------ ciclo
 
@@ -115,7 +179,8 @@ export class App implements CommandHost {
       this.renderer.flash = now / 1000;
       this.renderer.draw();
       $('clock').textContent = formatTime(this.sim.time, true);
-      if (now - this.lastTT > 500) { this.lastTT = now; this.renderTimetable(); this.renderStats(); if (this.selected && !$('trainInfo').hidden) this.renderTrainInfo(); }
+      if (now - this.lastSave > 10000) { this.lastSave = now; this.save(); }
+      if (now - this.lastTT > 500) { this.lastTT = now; this.renderTimetable(); this.renderStats(); this.renderHints(); if (this.selected && !$('trainInfo').hidden) this.renderTrainInfo(); }
     }
     requestAnimationFrame(this.frame);
   };
@@ -135,7 +200,7 @@ export class App implements CommandHost {
     $('btnNext').onclick = () => this.skipToNext();
     $('btnHelp').onclick = () => this.showHelp();
     $('btnPerf').onclick = () => { this.renderPerf(); $('perfModal').hidden = false; };
-    $('btnLevels').onclick = () => { this.setRunning(false); $('startModal').hidden = false; };
+    $('btnLevels').onclick = () => { this.setRunning(false); this.save(); this.refreshResume(); $('startModal').hidden = false; };
     $('btnTheme').onclick = () => {
       const light = !document.body.classList.contains('light');
       document.body.classList.toggle('light', light);
@@ -154,6 +219,9 @@ export class App implements CommandHost {
       b.onclick = () => this.loadLevel(l);
       ll.appendChild(b);
     }
+    window.addEventListener('beforeunload', () => this.save());
+    $('btnResume').onclick = () => this.resume();
+    this.refreshResume();
     // import
     const drop = $('drop');
     const handle = async (files: File[]) => {
@@ -185,6 +253,12 @@ export class App implements CommandHost {
     window.addEventListener('resize', () => { if (this.renderer) this.renderer.resize(); });
   }
 
+  private refreshResume() {
+    const sg = this.savedGame();
+    $('resumeBox').hidden = !sg;
+    if (sg) $('resumeInfo').textContent = `${sg.name} — ${formatTime(sg.time)}`;
+  }
+
   private sideTab(s: string) {
     document.querySelectorAll('#sideTabs button').forEach((x) => x.classList.toggle('active', (x as HTMLElement).dataset.s === s));
     $('alerts').hidden = s !== 'alerts';
@@ -201,7 +275,7 @@ export class App implements CommandHost {
       if (!this.sim) return;
       if (!line) { this.setRunning(!this.running); this.feedback(this.running ? 'Tempo avviato' : 'In pausa', 'pv'); return; }
       this.history.unshift(line); this.histIdx = -1;
-      const res = this.cmd.execute(line);
+      const res = this.exec(line);
       const bad = res.filter((r) => !r.ok);
       const msg = res.map((r) => r.msg).filter(Boolean).join(' · ');
       this.feedback(msg || 'OK', bad.length ? 'bad' : 'ok');
@@ -214,7 +288,12 @@ export class App implements CommandHost {
     inp.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); run(); }
       else if (e.key === 'Escape') { inp.value = ''; this.updatePreview(); }
-      else if (e.key === 'Tab') { e.preventDefault(); if (this.sugg.length) this.acceptSuggestion(this.sugg[this.suggIdx % this.sugg.length].text); }
+      else if (e.key === 'Tab') {
+        e.preventDefault();
+        if (!this.sugg.length) return;
+        if (!inp.value.trim()) { inp.value = this.sugg[0].text; this.updatePreview(); }
+        else this.acceptSuggestion(this.sugg[this.suggIdx % this.sugg.length].text);
+      }
       else if (e.key === 'ArrowUp') { e.preventDefault(); if (this.histIdx < this.history.length - 1) inp.value = this.history[++this.histIdx]; this.updatePreview(); }
       else if (e.key === 'ArrowDown') { e.preventDefault(); if (this.histIdx > 0) inp.value = this.history[--this.histIdx]; else { this.histIdx = -1; inp.value = ''; } this.updatePreview(); }
       else if (e.key === 'PageUp' || (e.key === '+' && e.altKey)) { e.preventDefault(); this.bumpSpeed(1); }
@@ -240,26 +319,41 @@ export class App implements CommandHost {
     this.updatePreview();
   }
 
+  hints = true;
+  private lastHints = '';
+
+  /** Suggerimenti dell'assistente DM quando la barra è vuota. */
+  private renderHints() {
+    const inp = $<HTMLInputElement>('cmd');
+    if (inp.value.trim() || !this.hints) { if (!inp.value.trim()) this.showSuggest([]); return; }
+    const sg = suggestions(this.sim).slice(0, 6);
+    const key = sg.map((x) => x.command + x.train.name + x.urgent).join('|');
+    if (key === this.lastHints) return;
+    this.lastHints = key;
+    this.showSuggest(sg.map((x) => ({ text: x.command, hint: `${x.urgent ? '⚠ ' : ''}${x.why}` })), true);
+  }
+
   private updatePreview() {
     if (!this.sim) return;
     const line = $<HTMLInputElement>('cmd').value;
-    if (!line.trim()) { this.renderer.preview = undefined; this.showSuggest([]); return; }
+    if (!line.trim()) { this.renderer.preview = undefined; this.lastHints = ''; this.showSuggest([]); this.renderHints(); return; }
     const pv = this.cmd.preview(line);
     this.renderer.preview = pv;
     if (pv.message) this.feedback(pv.message, pv.ok ? 'pv' : 'bad');
     this.showSuggest(this.cmd.suggest(line));
   }
 
-  private showSuggest(s: { text: string; hint: string }[]) {
+  private showSuggest(s: { text: string; hint: string }[], hints = false) {
     this.sugg = s; this.suggIdx = 0;
     const box = $('suggest');
     box.hidden = !s.length;
-    box.innerHTML = '';
+    box.classList.toggle('hints', hints);
+    box.innerHTML = hints && s.length ? '<span class="hint-title">Assistente DM</span>' : '';
     s.forEach((x, i) => {
       const b = document.createElement('button');
       if (i === 0) b.className = 'sel';
       b.innerHTML = `${esc(x.text)}<small>${esc(x.hint)}</small>`;
-      b.onmousedown = (e) => { e.preventDefault(); this.acceptSuggestion(x.text); };
+      b.onmousedown = (e) => { e.preventDefault(); if (hints) { $<HTMLInputElement>('cmd').value = x.text; this.updatePreview(); } else this.acceptSuggestion(x.text); };
       box.appendChild(b);
     });
   }
@@ -302,6 +396,7 @@ export class App implements CommandHost {
     $('zoomOut').onclick = () => { const r = cv.getBoundingClientRect(); this.renderer.zoomAt(r.width / 2, r.height / 2, 0.8); };
     $('zoomFit').onclick = () => this.renderer.fit();
     $('toggleLabels').onclick = () => { this.renderer.showLabels = !this.renderer.showLabels; $('toggleLabels').classList.toggle('on', !this.renderer.showLabels); };
+    $('toggleHints').onclick = () => { this.hints = !this.hints; $('toggleHints').classList.toggle('on', !this.hints); this.lastHints = ''; this.updatePreview(); };
     $('toggleSound').onclick = () => { this.sound = !this.sound; $('toggleSound').classList.toggle('on', !this.sound); $('toggleSound').textContent = this.sound ? '♪' : '∅'; };
   }
 
@@ -324,12 +419,15 @@ export class App implements CommandHost {
     this.updatePreview();
   }
 
+  /** Azione diretta (Shift+clic): passa comunque dalla barra comandi, così resta nel salvataggio. */
   private direct(el: Element) {
-    let r;
-    if (el.kind === 'signal') r = this.sim.toggleSignal(el as Signal);
-    else if (el.kind === 'switch') r = this.sim.throwSwitch(el);
-    else if (el.kind === 'itin' && el.name) r = this.sim.activateItinerary(el.name);
-    if (r) this.feedback(r.msg, r.ok ? 'ok' : 'bad');
+    let line = '';
+    if (el.kind === 'signal' && !(el as Signal).approach) line = el.label!;
+    else if (el.kind === 'switch') line = el.label!;
+    else if (el.kind === 'itin' && el.name) line = el.name;
+    if (!line) return;
+    const r = this.exec(line);
+    this.feedback(r.map((x) => x.msg).join(' · '), r.every((x) => x.ok) ? 'ok' : 'bad');
   }
 
   private describe(el: Element): string {
@@ -344,7 +442,7 @@ export class App implements CommandHost {
       lines.push(`Deviatoio ${el.label} — ${el.switched ? 'rovescio' : 'normale'}`);
       lines.push(el.state === 'free' ? 'Libero · Shift+clic: manovra' : 'Bloccato (itinerario o treno)');
     } else if (el.kind === 'track') {
-      if (el.isStation && el.name) lines.push(`Binario di stazione: ${el.name}`);
+      if (el.isStation && el.name) lines.push(`Binario di stazione: ${el.name}${platformOf(el.name) ? ` (digita b${platformOf(el.name)})` : ''}`);
       lines.push(`Lunghezza ${el.length} m${el.speed.length ? ` · vel. ${el.speed.filter(Boolean).join('/')} km/h` : ''}`);
     } else if (el.kind === 'text') {
       if (el.label) lines.push(`Ingresso/uscita ${el.name}${el.label !== el.name ? ' (digita ' + el.label + ')' : ''}`);
@@ -445,7 +543,7 @@ export class App implements CommandHost {
       ${d.notes.length ? `<div>Note</div><div>${esc(d.notes.join(' '))}</div>` : ''}</div>
       <div class="actions"><button class="btn" data-c="inv ${esc(sn)}">Inverti</button><button class="btn" data-c="man ${esc(sn)}">Manovra</button><button class="btn" data-c="parti ${esc(sn)}">Parti ora</button><button class="btn" data-center="1">Centra</button></div>
       <table><thead><tr><th>Stazione</th><th>Arr.</th><th>Part.</th><th>Reale</th><th>Bin.</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-    box.querySelectorAll('[data-c]').forEach((b) => ((b as HTMLElement).onclick = () => { const r = this.cmd.execute((b as HTMLElement).dataset.c!); this.feedback(r.map((x) => x.msg).join(' · '), r.every((x) => x.ok) ? 'ok' : 'bad'); }));
+    box.querySelectorAll('[data-c]').forEach((b) => ((b as HTMLElement).onclick = () => { const r = this.exec((b as HTMLElement).dataset.c!); this.feedback(r.map((x) => x.msg).join(' · '), r.every((x) => x.ok) ? 'ok' : 'bad'); }));
     const c = box.querySelector('[data-center]') as HTMLElement;
     c.onclick = () => { if (t.occ[0]) this.renderer.centerOn(t.occ[0].el.x, t.occ[0].el.y); };
   }
@@ -485,6 +583,8 @@ export class App implements CommandHost {
   }
 }
 
+const SAVE_KEY = 'td2026.save';
+
 const HELP_HTML = `
 <h2>La barra comandi</h2>
 <p>Come sul banco ACEI premi i <b>pulsanti</b> d'inizio e fine itinerario: qui li digiti, separati da spazi. Mentre scrivi, l'itinerario viene <b>anteprimato in blu</b> sul quadro.</p>
@@ -492,6 +592,8 @@ const HELP_HTML = `
   <code>1 3</code><div>Forma l'itinerario dal segnale 1 al segnale 3: manovra i deviatoi necessari e dispone il segnale 1 a via libera.</div>
   <code>3 E</code><div>Dal segnale 3 verso l'uscita E.</div>
   <code>1 3 E</code><div>Catena: 1→3 e poi 3→E in un colpo solo.</div>
+  <code>2 b5</code><div>Riceve sul <b>binario 5</b> (indispensabile nelle stazioni di testa, dove il binario finisce contro il paraurti). Anche <code>2 @5</code>.</div>
+  <code>1 b2 E</code><div>Attraversa la stazione passando dal binario 2 e prosegue verso l'uscita E.</div>
   <code>12</code><div>Apre (o chiude, se è verde) il solo segnale 12 con gli scambi come sono.</div>
   <code>x 12</code><div>Annulla: segnale 12 a via impedita, l'itinerario non impegnato si libera.</div>
   <code>a 31</code><div>Blocco automatico: il segnale si riapre da solo dopo il passaggio dei treni (solo segnali con doppio anello).</div>

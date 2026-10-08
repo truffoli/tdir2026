@@ -162,6 +162,15 @@ export class Renderer {
       }
     }
 
+    // paraurti dei binari tronchi
+    ctx.strokeStyle = T.track; ctx.lineWidth = G * 0.16; ctx.lineCap = 'butt';
+    for (const [e, side] of this.bufferStops()) {
+      if (!vis(e)) continue;
+      const x = e.x * G + (side < 0 ? G * 0.12 : G * 0.88);
+      ctx.beginPath(); ctx.moveTo(x, e.y * G + G * 0.18); ctx.lineTo(x, e.y * G + G * 0.82); ctx.stroke();
+    }
+    ctx.lineCap = 'round';
+
     // testi
     ctx.textBaseline = 'middle';
     for (const t of L.texts.values()) {
@@ -228,6 +237,25 @@ export class Renderer {
       ctx.strokeStyle = T.preview; ctx.lineWidth = 1.5 / this.zoom;
       ctx.strokeRect(this.hover.x * G, this.hover.y * G, G, G);
     }
+  }
+
+  private bsCache?: { L: Layout; v: [Element, number][] };
+  /** Binari orizzontali che terminano senza proseguire né uscire dal tracciato. */
+  private bufferStops(): [Element, number][] {
+    const L = this.layout;
+    if (this.bsCache?.L === L) return this.bsCache.v;
+    const v: [Element, number][] = [];
+    for (const e of L.tracks.values()) {
+      if (e.kind !== 'track' || e.dir !== 1 || e.hidden) continue;
+      for (const side of [-1, 1]) {
+        const link = side < 0 ? e.wlink : e.elink;
+        if (link && (link.x || link.y)) continue;
+        if (L.trackAt(e.x + side, e.y) || L.linkedText(e.x, e.y)) continue;
+        v.push([e, side]);
+      }
+    }
+    this.bsCache = { L, v };
+    return v;
   }
 
   private previewShape(el: Element) {
