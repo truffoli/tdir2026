@@ -56,13 +56,26 @@ export class Renderer {
     const r = this.canvas.getBoundingClientRect();
     const L = this.layout;
     let minx = Infinity, miny = Infinity, maxx = 0, maxy = 0;
-    for (const e of L.elements) {
-      if (e.kind === 'text' && !e.name) continue;
-      if (e.hidden) continue;
-      minx = Math.min(minx, e.x); miny = Math.min(miny, e.y);
-      maxx = Math.max(maxx, e.x + (e.kind === 'text' ? Math.ceil((e.name?.length ?? 1) * 0.6) : 1));
-      maxy = Math.max(maxy, e.y + 1);
+    // inquadra il gruppo principale di binari (gli scenari originali hanno spesso
+    // binari di servizio, testi e segnali fittizi lontani dal tracciato)
+    const tr = [...L.tracks.values()].filter((e) => !e.hidden);
+    const main = (vals: number[]): [number, number] => {
+      const v = [...vals].sort((a, b) => a - b);
+      let best: [number, number] = [v[0], v[v.length - 1]], bestN = 0, start = 0;
+      for (let i = 1; i <= v.length; i++) {
+        if (i === v.length || v[i] - v[i - 1] > 25) {
+          if (i - start > bestN) { bestN = i - start; best = [v[start], v[i - 1]]; }
+          start = i;
+        }
+      }
+      return best;
+    };
+    if (tr.length) {
+      [minx, maxx] = main(tr.map((e) => e.x));
+      [miny, maxy] = main(tr.map((e) => e.y));
+      maxx += 1; maxy += 1;
     }
+    minx -= 3; maxx += 4; miny -= 2; maxy += 2;
     if (!isFinite(minx)) return;
     const w = (maxx - minx + 2) * this.G, h = (maxy - miny + 2) * this.G;
     this.zoom = Math.max(0.15, Math.min(3, Math.min(r.width / w, r.height / h)));

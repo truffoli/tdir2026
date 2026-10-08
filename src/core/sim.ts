@@ -835,10 +835,11 @@ export class Simulation {
   }
 
   private checkPlatform(t: Train, wanted: string, el: Element) {
-    const pw = platformOf(wanted);
-    if (pw !== undefined && platformOf(el.name!) !== pw) {
+    // come check_platform() dell'originale: penalità solo se entrambi i nomi indicano il binario
+    const pw = platformOf(wanted), pa = platformOf(el.name!);
+    if (pw !== undefined && pa !== undefined && pa !== pw) {
       t.wrongPlatform = true; this.perf.wrongPlatform++;
-      this.alert(`Treno ${t.name} al binario ${platformOf(el.name!) ?? '?'} invece del ${pw}`, 'bad', t, el);
+      this.alert(`Treno ${t.name} al binario ${pa} invece del ${pw}`, 'bad', t, el);
     }
   }
 

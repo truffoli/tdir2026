@@ -251,6 +251,19 @@ export class App implements CommandHost {
     this.bindCommandBar();
     this.bindCanvas();
     window.addEventListener('resize', () => { if (this.renderer) this.renderer.resize(); });
+    // divisore tra quadro e tabella orari
+    const sp2 = $('splitter');
+    sp2.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const move = (ev: MouseEvent) => {
+        const h = Math.max(120, Math.min(window.innerHeight - 260, window.innerHeight - ev.clientY));
+        document.documentElement.style.setProperty('--bottom-h', h + 'px');
+        this.renderer?.resize();
+      };
+      const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+    });
   }
 
   private refreshResume() {

@@ -181,12 +181,8 @@ export function platformOf(n: string): string | undefined {
   return i >= 0 ? n.slice(i + 1).trim() : undefined;
 }
 
-/** Stessa stazione: se uno dei due nomi non indica il binario, conta solo la stazione. */
+/** Stessa stazione, a prescindere dal binario (come sameStation() dell'originale: il binario errato è una penalità a parte). */
 export function sameStation(a: string | undefined, b: string | undefined): boolean {
   if (!a || !b) return false;
-  a = a.trim(); b = b.trim();
-  if (a === b) return true;
-  if (baseStation(a).toLowerCase() !== baseStation(b).toLowerCase()) return false;
-  const pa = platformOf(a), pb = platformOf(b);
-  return pa === undefined || pb === undefined || pa === pb;
+  return baseStation(a).toLowerCase() === baseStation(b).toLowerCase();
 }

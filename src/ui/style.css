@@ -68,7 +68,9 @@ body.light #cmd { background: #fff; color: #000; }
 .suggest.hints { align-items: center; }
 .suggest .hint-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--warn); padding: 0 6px; }
 
-.bottom { display: grid; grid-template-columns: 1fr 380px; min-height: 0; }
+.bottom { position: relative; display: grid; grid-template-columns: 1fr 380px; min-height: 0; }
+.splitter { position: absolute; left: 0; right: 0; top: -4px; height: 8px; cursor: ns-resize; z-index: 5; }
+.splitter:hover { background: color-mix(in srgb, var(--accent) 35%, transparent); }
 .panel { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--panel); }
 .panel-head { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
 .tabs { display: flex; gap: 2px; }
