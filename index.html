@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Train Director 2026</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand"><span class="logo">TD</span><span class="brand-name">Train Director <b>2026</b></span></div>
+      <div class="scenario" id="scenarioName">—</div>
+      <div class="clock-box">
+        <div class="clock" id="clock">00:00:00</div>
+        <div class="day" id="dayName"></div>
+      </div>
+      <div class="controls">
+        <button id="btnPlay" class="btn primary" title="Avvia / pausa (Invio a barra vuota)">▶ Avvia</button>
+        <div class="speeds" id="speeds"></div>
+        <button id="btnNext" class="btn" title="Salta a 3 minuti dal prossimo evento">⏭</button>
+      </div>
+      <div class="stats" id="stats"></div>
+      <div class="score" id="score" title="Punti di penalità">0</div>
+      <nav class="menu">
+        <button class="btn ghost" id="btnPerf">Prestazioni</button>
+        <button class="btn ghost" id="btnHelp">Aiuto</button>
+        <button class="btn ghost" id="btnTheme">Tema</button>
+        <button class="btn ghost" id="btnLevels">Livelli</button>
+      </nav>
+    </header>
+
+    <main class="board-wrap">
+      <canvas id="board"></canvas>
+      <div class="board-tools">
+        <button class="tool" id="zoomIn" title="Zoom +">+</button>
+        <button class="tool" id="zoomOut" title="Zoom −">−</button>
+        <button class="tool" id="zoomFit" title="Adatta">⤢</button>
+        <button class="tool" id="toggleLabels" title="Mostra/nascondi numeri">#</button>
+        <button class="tool" id="toggleSound" title="Suoni">♪</button>
+      </div>
+      <div class="tooltip" id="tooltip" hidden></div>
+      <div class="tutorial" id="tutorial" hidden></div>
+    </main>
+
+    <section class="cmdbar">
+      <div class="suggest" id="suggest" hidden></div>
+      <div class="cmd-row">
+        <span class="prompt">DM&gt;</span>
+        <input id="cmd" autocomplete="off" spellcheck="false" placeholder="Digita i pulsanti separati da spazi: es. 1 3 E  ·  x 4  ·  d2  ·  inv 2291  ·  ? per l'aiuto" />
+        <button class="btn primary" id="cmdGo">Esegui</button>
+      </div>
+      <div class="cmd-feedback" id="feedback"></div>
+    </section>
+
+    <section class="bottom">
+      <div class="panel timetable">
+        <div class="panel-head">
+          <div class="tabs" id="ttTabs">
+            <button data-f="next" class="active">Prossimi</button>
+            <button data-f="active">In circolazione</button>
+            <button data-f="all">Tutti</button>
+            <button data-f="done">Conclusi</button>
+          </div>
+          <input class="tt-search" id="ttSearch" placeholder="Cerca treno, stazione…" />
+        </div>
+        <div class="tt-scroll"><table id="tt"><thead><tr>
+          <th>Treno</th><th>Ingresso</th><th>Da</th><th>Fermata</th><th>Bin.</th><th>Arr.</th><th>Part.</th><th>Uscita</th><th>A</th><th>Stato</th><th>Rit.</th>
+        </tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="panel side">
+        <div class="panel-head"><div class="tabs" id="sideTabs"><button data-s="alerts" class="active">Avvisi</button><button data-s="train">Treno</button></div></div>
+        <div class="side-body" id="alerts"></div>
+        <div class="side-body" id="trainInfo" hidden></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="modal" id="startModal">
+    <div class="modal-card wide">
+      <div class="start-head">
+        <div><h1>Train Director <b>2026</b></h1><p>Sei il dirigente movimento: forma gli itinerari, rispetta l'orario, evita le penalità.</p></div>
+      </div>
+      <h2>Livelli</h2>
+      <div class="levels" id="levelList"></div>
+      <h2>Importa uno scenario di Train Director</h2>
+      <div class="drop" id="drop">
+        <p>Trascina qui un file <b>.zip</b> dello scenario (oppure i file <b>.trk</b> + <b>.sch</b> e le icone <b>.xpm</b>)</p>
+        <label class="btn">Scegli file…<input type="file" id="fileInput" multiple accept=".zip,.trk,.sch,.tds,.xpm,.pth" hidden /></label>
+        <div class="import-opts">
+          <label>Giorno <select id="daySel">
+            <option value="1">Lunedì</option><option value="2">Martedì</option><option value="3">Mercoledì</option><option value="4">Giovedì</option><option value="5">Venerdì</option><option value="6">Sabato</option><option value="7">Domenica</option>
+          </select></label>
+          <label><input type="checkbox" id="optDelays" checked /> Ritardi casuali</label>
+          <label><input type="checkbox" id="optAssign" checked /> Assegnazione automatica del materiale</label>
+        </div>
+        <div class="import-msg" id="importMsg"></div>
+      </div>
+      <p class="fineprint">Ispirato a <a href="https://www.backerstreet.com/traindir/" target="_blank" rel="noopener">Train Director</a> di Giampiero Caprino (GPL v2). Gli scritti (.tds) degli scenari importati non vengono eseguiti: i segnali di avviso e gli indicatori vengono riconosciuti automaticamente.</p>
+    </div>
+  </div>
+
+  <div class="modal" id="helpModal" hidden><div class="modal-card"><button class="close" data-close>×</button><div id="helpBody"></div></div></div>
+  <div class="modal" id="perfModal" hidden><div class="modal-card"><button class="close" data-close>×</button><div id="perfBody"></div></div></div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
